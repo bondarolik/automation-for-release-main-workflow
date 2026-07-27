@@ -24,7 +24,7 @@ jobs:
     name: Run post-release lifecycle
     runs-on: ubuntu-latest
 
-    # Only run when release -> main was actually merged.
+    # Only execute when release -> main was actually merged.
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.head.ref == 'release' &&
@@ -34,34 +34,74 @@ jobs:
       GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
 
     steps:
-      # -----------------------------------------------------------------------
-      # Initial setup
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Checkout and toolchain setup
+      # ---------------------------------------------------------------------
 
       - name: Check out merged main branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Validate pnpm project configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f package.json ]]; then
+            echo "::error::package.json was not found in the repository root."
+            exit 1
+          fi
+
+          if [[ ! -f pnpm-lock.yaml ]]; then
+            echo "::error::pnpm-lock.yaml was not found in the repository root."
+            exit 1
+          fi
+
+          PACKAGE_MANAGER="$(
+            node --print "require('./package.json').packageManager ?? ''"
+          )"
+
+          if [[ ! "${PACKAGE_MANAGER}" =~ ^pnpm@[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::package.json must define a pinned packageManager such as pnpm@10.14.0."
+            exit 1
+          fi
+
+          echo "Configured package manager: ${PACKAGE_MANAGER}"
+          echo "Installed pnpm version: $(pnpm --version)"
+          echo "Installed Node.js version: $(node --version)"
 
       - name: Configure Git identity
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "release-automation[bot]"
-          git config user.email "release-automation[bot]@users.noreply.github.com"
+          git config user.email \
+            "release-automation[bot]@users.noreply.github.com"
 
       - name: Verify GitHub CLI authentication
-        run: gh auth status
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth status
 
-      # -----------------------------------------------------------------------
-      # Read and validate the release PR
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Read and validate release information
+      # ---------------------------------------------------------------------
 
       - name: Read Version Impact
         id: version_impact
@@ -77,7 +117,7 @@ jobs:
             node --print "require('./package.json').version"
           )"
 
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::package.json contains an invalid semantic version: ${VERSION}"
             exit 1
           fi
@@ -85,12 +125,12 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
 
-          echo "Released package version: ${VERSION}"
+          echo "Released version: ${VERSION}"
           echo "Release tag: v${VERSION}"
 
-      # -----------------------------------------------------------------------
-      # Tag the version that was just deployed
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Tag the version that was just released
+      # ---------------------------------------------------------------------
 
       - name: Create release tag
         if: steps.version_impact.outputs.should_release == 'true'
@@ -102,15 +142,21 @@ jobs:
 
           git fetch origin "${MAIN_BRANCH}" --tags --force
 
-          MAIN_SHA="$(git rev-parse "origin/${MAIN_BRANCH}")"
+          MAIN_SHA="$(
+            git rev-parse "origin/${MAIN_BRANCH}"
+          )"
 
-          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+          if git rev-parse \
+            --verify \
+            --quiet \
+            "refs/tags/${RELEASE_TAG}" >/dev/null; then
+
             EXISTING_TAG_SHA="$(
               git rev-list -n 1 "${RELEASE_TAG}"
             )"
 
             if [[ "${EXISTING_TAG_SHA}" != "${MAIN_SHA}" ]]; then
-              echo "::error::Tag ${RELEASE_TAG} already exists on ${EXISTING_TAG_SHA}, but main is ${MAIN_SHA}."
+              echo "::error::Tag ${RELEASE_TAG} already exists on ${EXISTING_TAG_SHA}, but main points to ${MAIN_SHA}."
               exit 1
             fi
 
@@ -127,18 +173,19 @@ jobs:
 
       - name: Record no-release selection
         if: steps.version_impact.outputs.impact == 'none'
+        shell: bash
         run: |
           {
-            echo "## No release version created"
+            echo "## No release artifacts"
             echo
-            echo "The release PR selected \`none\`."
+            echo "The Release PR selected \`none\`."
             echo
-            echo "No Git tag and no package version bump will be created."
+            echo "No Git tag or package version bump will be created."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # -----------------------------------------------------------------------
-      # Temporarily move open PRs from release to main
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Temporarily retarget PRs away from release
+      # ---------------------------------------------------------------------
 
       - name: Retarget open PRs from release to main
         id: retarget_to_main
@@ -179,9 +226,9 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # -----------------------------------------------------------------------
-      # Delete and recreate the release branch
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Rotate release branch
+      # ---------------------------------------------------------------------
 
       - name: Delete old release branch
         shell: bash
@@ -190,7 +237,9 @@ jobs:
 
           if git ls-remote \
             --exit-code \
-            --heads origin "${RELEASE_BRANCH}" >/dev/null 2>&1; then
+            --heads \
+            origin \
+            "${RELEASE_BRANCH}" >/dev/null 2>&1; then
 
             echo "Deleting remote branch ${RELEASE_BRANCH}."
             git push origin --delete "${RELEASE_BRANCH}"
@@ -211,13 +260,14 @@ jobs:
             "origin/${MAIN_BRANCH}"
 
           git push \
+            --force-with-lease \
             --set-upstream \
             origin \
             "${RELEASE_BRANCH}"
 
-      # -----------------------------------------------------------------------
-      # Calculate and write the next semantic version
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Calculate the next version with pnpm
+      # ---------------------------------------------------------------------
 
       - name: Calculate next semantic version
         id: next_version
@@ -243,9 +293,7 @@ jobs:
             node --print "require('./package.json').version"
           )"
 
-          # Updates package.json, package-lock.json and npm-shrinkwrap.json,
-          # when present. It does not create an npm-generated Git commit or tag.
-          npm version \
+          pnpm version \
             "${VERSION_IMPACT}" \
             --no-git-tag-version \
             --ignore-scripts
@@ -254,20 +302,45 @@ jobs:
             node --print "require('./package.json').version"
           )"
 
+          if [[ "${CURRENT_VERSION}" == "${NEXT_VERSION}" ]]; then
+            echo "::error::pnpm did not change the package version."
+            exit 1
+          fi
+
           BUMP_BRANCH="deploy/chore-version-bump-v${NEXT_VERSION}"
 
-          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "branch=${BUMP_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "current_version=${CURRENT_VERSION}" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "version=${NEXT_VERSION}" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "branch=${BUMP_BRANCH}" \
+            >> "$GITHUB_OUTPUT"
 
           echo "Version Impact: ${VERSION_IMPACT}"
           echo "Current version: ${CURRENT_VERSION}"
           echo "Next version: ${NEXT_VERSION}"
           echo "Version-bump branch: ${BUMP_BRANCH}"
 
-      # -----------------------------------------------------------------------
-      # Create the version-bump branch and commit
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Validate and commit the pnpm version change
+      # ---------------------------------------------------------------------
+
+      - name: Validate version-bump changes
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- package.json pnpm-lock.yaml; then
+            echo "::error::No version-related changes were produced."
+            exit 1
+          fi
+
+          echo "Version-related changes:"
+          git diff --stat -- package.json pnpm-lock.yaml
+          git diff -- package.json pnpm-lock.yaml
 
       - name: Create version-bump branch
         if: steps.version_impact.outputs.should_release == 'true'
@@ -280,7 +353,9 @@ jobs:
 
           if git ls-remote \
             --exit-code \
-            --heads origin "${BUMP_BRANCH}" >/dev/null 2>&1; then
+            --heads \
+            origin \
+            "${BUMP_BRANCH}" >/dev/null 2>&1; then
 
             echo "::error::Remote branch ${BUMP_BRANCH} already exists."
             exit 1
@@ -288,18 +363,10 @@ jobs:
 
           git checkout -b "${BUMP_BRANCH}"
 
-          git add package.json
-
-          if [[ -f package-lock.json ]]; then
-            git add package-lock.json
-          fi
-
-          if [[ -f npm-shrinkwrap.json ]]; then
-            git add npm-shrinkwrap.json
-          fi
+          git add package.json pnpm-lock.yaml
 
           if git diff --cached --quiet; then
-            echo "::error::The semantic version bump produced no file changes."
+            echo "::error::The semantic version bump produced no staged changes."
             exit 1
           fi
 
@@ -311,9 +378,9 @@ jobs:
             origin \
             "${BUMP_BRANCH}"
 
-      # -----------------------------------------------------------------------
-      # Open and merge the version-bump PR
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Create and merge the version-bump PR
+      # ---------------------------------------------------------------------
 
       - name: Create version-bump pull request
         id: bump_pr
@@ -338,6 +405,12 @@ jobs:
           - Next version: \`${NEXT_VERSION}\`
           - Version Impact: \`${VERSION_IMPACT}\`
           - Source release PR: #${SOURCE_RELEASE_PR}
+          - Package manager: \`pnpm\`
+
+          Updated files:
+
+          - \`package.json\`
+          - \`pnpm-lock.yaml\`
 
           This pull request was created automatically by the post-release workflow.
           EOF
@@ -378,12 +451,9 @@ jobs:
             --admin \
             --delete-branch
 
-      # -----------------------------------------------------------------------
-      # Restore the original open PRs to release
-      #
-      # This step uses always() so that it also attempts recovery when a later
-      # version-bump step fails.
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Restore the original feature PRs
+      # ---------------------------------------------------------------------
 
       - name: Retarget original PRs back to release
         if: always() && steps.retarget_to_main.outcome == 'success'
@@ -395,7 +465,9 @@ jobs:
 
           if ! git ls-remote \
             --exit-code \
-            --heads origin "${RELEASE_BRANCH}" >/dev/null 2>&1; then
+            --heads \
+            origin \
+            "${RELEASE_BRANCH}" >/dev/null 2>&1; then
 
             echo "::error::Cannot restore PR bases because ${RELEASE_BRANCH} does not exist."
             exit 1
@@ -437,9 +509,9 @@ jobs:
               >/dev/null
           done <<< "${PR_NUMBERS}"
 
-      # -----------------------------------------------------------------------
-      # Workflow summary
-      # -----------------------------------------------------------------------
+      # ---------------------------------------------------------------------
+      # Summary
+      # ---------------------------------------------------------------------
 
       - name: Write post-release summary
         if: always()

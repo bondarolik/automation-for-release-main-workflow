@@ -7,8 +7,6 @@ on:
       - edited
       - reopened
       - synchronize
-      - labeled
-      - unlabeled
       - ready_for_review
     branches:
       - main
@@ -22,30 +20,36 @@ jobs:
     name: Validate version impact
     runs-on: ubuntu-latest
 
-    # Only release -> main PRs need a release-level version decision.
+    # This repository expects production PRs to be release -> main.
     if: >
       github.event.pull_request.head.ref == 'release' &&
       github.event.pull_request.base.ref == 'main'
 
     steps:
       - name: Check out pull request
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
+          package-manager-cache: false
 
-      - name: Validate Version Impact selection
+      - name: Validate Version Impact
         id: version_impact
         run: node .github/scripts/read-version-impact.mjs
 
-      - name: Write validation summary
+      - name: Write workflow summary
         env:
           VERSION_IMPACT: ${{ steps.version_impact.outputs.impact }}
+          SHOULD_RELEASE: ${{ steps.version_impact.outputs.should_release }}
         run: |
           {
             echo "## Version Impact validation"
             echo
-            echo "Selected impact: \`${VERSION_IMPACT}\`"
+            echo "- Pull request: #${{ github.event.pull_request.number }}"
+            echo "- Source: \`${{ github.event.pull_request.head.ref }}\`"
+            echo "- Target: \`${{ github.event.pull_request.base.ref }}\`"
+            echo "- Selected impact: \`${VERSION_IMPACT}\`"
+            echo "- Create release artifacts: \`${SHOULD_RELEASE}\`"
           } >> "$GITHUB_STEP_SUMMARY"

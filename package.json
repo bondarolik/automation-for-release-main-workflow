@@ -5,17 +5,18 @@
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
+  "packageManager": "pnpm@10.14.0",
   "engines": {
     "node": ">=20",
-    "npm": ">=10"
+    "pnpm": ">=10"
   },
   "scripts": {
     "test": "node --test",
     "validate:package": "node -e \"const pkg = require('./package.json'); if (!/^\\d+\\.\\d+\\.\\d+([+-][0-9A-Za-z.-]+)?$/.test(pkg.version)) process.exit(1); console.log('Valid package version:', pkg.version)\"",
     "version:current": "node --print \"require('./package.json').version\"",
-    "demo:patch": "npm version patch --no-git-tag-version --ignore-scripts",
-    "demo:minor": "npm version minor --no-git-tag-version --ignore-scripts",
-    "demo:major": "npm version major --no-git-tag-version --ignore-scripts"
+    "demo:patch": "pnpm version patch --no-git-tag-version --ignore-scripts",
+    "demo:minor": "pnpm version minor --no-git-tag-version --ignore-scripts",
+    "demo:major": "pnpm version major --no-git-tag-version --ignore-scripts"
   },
   "repository": {
     "type": "git",
