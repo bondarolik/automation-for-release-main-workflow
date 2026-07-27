@@ -1,0 +1,6 @@
+{
+  "name": "Automation For release - main workflow",
+  "version": "1.0.0",
+  "description": "Dry-run demo for PR / release / main workflow",
+  "private": true
+}
