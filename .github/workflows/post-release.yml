@@ -1,0 +1,470 @@
+name: Post-release automation
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+concurrency:
+  group: post-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  MAIN_BRANCH: main
+  RELEASE_BRANCH: release
+
+jobs:
+  post-release:
+    name: Run post-release lifecycle
+    runs-on: ubuntu-latest
+
+    # Only run when release -> main was actually merged.
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.ref == 'release' &&
+      github.event.pull_request.base.ref == 'main'
+
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Initial setup
+      # -----------------------------------------------------------------------
+
+      - name: Check out merged main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "release-automation[bot]"
+          git config user.email "release-automation[bot]@users.noreply.github.com"
+
+      - name: Verify GitHub CLI authentication
+        run: gh auth status
+
+      # -----------------------------------------------------------------------
+      # Read and validate the release PR
+      # -----------------------------------------------------------------------
+
+      - name: Read Version Impact
+        id: version_impact
+        run: node .github/scripts/read-version-impact.mjs
+
+      - name: Read released package version
+        id: released_version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(
+            node --print "require('./package.json').version"
+          )"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::package.json contains an invalid semantic version: ${VERSION}"
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+          echo "Released package version: ${VERSION}"
+          echo "Release tag: v${VERSION}"
+
+      # -----------------------------------------------------------------------
+      # Tag the version that was just deployed
+      # -----------------------------------------------------------------------
+
+      - name: Create release tag
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.released_version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin "${MAIN_BRANCH}" --tags --force
+
+          MAIN_SHA="$(git rev-parse "origin/${MAIN_BRANCH}")"
+
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            EXISTING_TAG_SHA="$(
+              git rev-list -n 1 "${RELEASE_TAG}"
+            )"
+
+            if [[ "${EXISTING_TAG_SHA}" != "${MAIN_SHA}" ]]; then
+              echo "::error::Tag ${RELEASE_TAG} already exists on ${EXISTING_TAG_SHA}, but main is ${MAIN_SHA}."
+              exit 1
+            fi
+
+            echo "Tag ${RELEASE_TAG} already points to current main."
+            exit 0
+          fi
+
+          git tag \
+            --annotate "${RELEASE_TAG}" \
+            "${MAIN_SHA}" \
+            --message "Release ${RELEASE_TAG}"
+
+          git push origin "${RELEASE_TAG}"
+
+      - name: Record no-release selection
+        if: steps.version_impact.outputs.impact == 'none'
+        run: |
+          {
+            echo "## No release version created"
+            echo
+            echo "The release PR selected \`none\`."
+            echo
+            echo "No Git tag and no package version bump will be created."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -----------------------------------------------------------------------
+      # Temporarily move open PRs from release to main
+      # -----------------------------------------------------------------------
+
+      - name: Retarget open PRs from release to main
+        id: retarget_to_main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t PR_NUMBERS < <(
+            gh api \
+              --paginate \
+              --method GET \
+              "/repos/${GITHUB_REPOSITORY}/pulls" \
+              -f state=open \
+              -f base="${RELEASE_BRANCH}" \
+              -f per_page=100 \
+              --jq '.[].number'
+          )
+
+          echo "Found ${#PR_NUMBERS[@]} open PR(s) targeting ${RELEASE_BRANCH}."
+
+          RETARGETED_PR_NUMBERS=""
+
+          for PR_NUMBER in "${PR_NUMBERS[@]}"; do
+            echo "Changing PR #${PR_NUMBER}: ${RELEASE_BRANCH} -> ${MAIN_BRANCH}"
+
+            gh api \
+              --method PATCH \
+              "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              -f base="${MAIN_BRANCH}" \
+              >/dev/null
+
+            RETARGETED_PR_NUMBERS+="${PR_NUMBER}"$'\n'
+          done
+
+          {
+            echo "pr_numbers<<EOF"
+            printf '%s' "${RETARGETED_PR_NUMBERS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Delete and recreate the release branch
+      # -----------------------------------------------------------------------
+
+      - name: Delete old release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git ls-remote \
+            --exit-code \
+            --heads origin "${RELEASE_BRANCH}" >/dev/null 2>&1; then
+
+            echo "Deleting remote branch ${RELEASE_BRANCH}."
+            git push origin --delete "${RELEASE_BRANCH}"
+          else
+            echo "Remote branch ${RELEASE_BRANCH} does not exist."
+          fi
+
+      - name: Recreate release branch from main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin "${MAIN_BRANCH}"
+
+          git checkout \
+            --force \
+            -B "${RELEASE_BRANCH}" \
+            "origin/${MAIN_BRANCH}"
+
+          git push \
+            --set-upstream \
+            origin \
+            "${RELEASE_BRANCH}"
+
+      # -----------------------------------------------------------------------
+      # Calculate and write the next semantic version
+      # -----------------------------------------------------------------------
+
+      - name: Calculate next semantic version
+        id: next_version
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          VERSION_IMPACT: ${{ steps.version_impact.outputs.impact }}
+        run: |
+          set -euo pipefail
+
+          case "${VERSION_IMPACT}" in
+            patch|minor|major)
+              ;;
+            *)
+              echo "::error::Unsupported Version Impact: ${VERSION_IMPACT}"
+              exit 1
+              ;;
+          esac
+
+          git checkout --force "${RELEASE_BRANCH}"
+
+          CURRENT_VERSION="$(
+            node --print "require('./package.json').version"
+          )"
+
+          # Updates package.json, package-lock.json and npm-shrinkwrap.json,
+          # when present. It does not create an npm-generated Git commit or tag.
+          npm version \
+            "${VERSION_IMPACT}" \
+            --no-git-tag-version \
+            --ignore-scripts
+
+          NEXT_VERSION="$(
+            node --print "require('./package.json').version"
+          )"
+
+          BUMP_BRANCH="deploy/chore-version-bump-v${NEXT_VERSION}"
+
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BUMP_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "Version Impact: ${VERSION_IMPACT}"
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "Next version: ${NEXT_VERSION}"
+          echo "Version-bump branch: ${BUMP_BRANCH}"
+
+      # -----------------------------------------------------------------------
+      # Create the version-bump branch and commit
+      # -----------------------------------------------------------------------
+
+      - name: Create version-bump branch
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          BUMP_BRANCH: ${{ steps.next_version.outputs.branch }}
+          NEXT_VERSION: ${{ steps.next_version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if git ls-remote \
+            --exit-code \
+            --heads origin "${BUMP_BRANCH}" >/dev/null 2>&1; then
+
+            echo "::error::Remote branch ${BUMP_BRANCH} already exists."
+            exit 1
+          fi
+
+          git checkout -b "${BUMP_BRANCH}"
+
+          git add package.json
+
+          if [[ -f package-lock.json ]]; then
+            git add package-lock.json
+          fi
+
+          if [[ -f npm-shrinkwrap.json ]]; then
+            git add npm-shrinkwrap.json
+          fi
+
+          if git diff --cached --quiet; then
+            echo "::error::The semantic version bump produced no file changes."
+            exit 1
+          fi
+
+          git commit \
+            --message "chore: bump version to ${NEXT_VERSION}"
+
+          git push \
+            --set-upstream \
+            origin \
+            "${BUMP_BRANCH}"
+
+      # -----------------------------------------------------------------------
+      # Open and merge the version-bump PR
+      # -----------------------------------------------------------------------
+
+      - name: Create version-bump pull request
+        id: bump_pr
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          BUMP_BRANCH: ${{ steps.next_version.outputs.branch }}
+          CURRENT_VERSION: ${{ steps.next_version.outputs.current_version }}
+          NEXT_VERSION: ${{ steps.next_version.outputs.version }}
+          VERSION_IMPACT: ${{ steps.version_impact.outputs.impact }}
+          SOURCE_RELEASE_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          PR_BODY="$(
+            cat <<EOF
+          ## Version bump
+
+          Prepares the next release cycle.
+
+          - Released version: \`${CURRENT_VERSION}\`
+          - Next version: \`${NEXT_VERSION}\`
+          - Version Impact: \`${VERSION_IMPACT}\`
+          - Source release PR: #${SOURCE_RELEASE_PR}
+
+          This pull request was created automatically by the post-release workflow.
+          EOF
+          )"
+
+          PR_URL="$(
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${RELEASE_BRANCH}" \
+              --head "${BUMP_BRANCH}" \
+              --title "[deploy] chore: version bump ${NEXT_VERSION}" \
+              --body "${PR_BODY}"
+          )"
+
+          PR_NUMBER="$(
+            gh pr view "${PR_URL}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json number \
+              --jq '.number'
+          )"
+
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          echo "Created version-bump PR #${PR_NUMBER}: ${PR_URL}"
+
+      - name: Merge version-bump pull request
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          VERSION_BUMP_PR: ${{ steps.bump_pr.outputs.number }}
+        run: |
+          set -euo pipefail
+
+          gh pr merge "${VERSION_BUMP_PR}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --merge \
+            --admin \
+            --delete-branch
+
+      # -----------------------------------------------------------------------
+      # Restore the original open PRs to release
+      #
+      # This step uses always() so that it also attempts recovery when a later
+      # version-bump step fails.
+      # -----------------------------------------------------------------------
+
+      - name: Retarget original PRs back to release
+        if: always() && steps.retarget_to_main.outcome == 'success'
+        shell: bash
+        env:
+          PR_NUMBERS: ${{ steps.retarget_to_main.outputs.pr_numbers }}
+        run: |
+          set -euo pipefail
+
+          if ! git ls-remote \
+            --exit-code \
+            --heads origin "${RELEASE_BRANCH}" >/dev/null 2>&1; then
+
+            echo "::error::Cannot restore PR bases because ${RELEASE_BRANCH} does not exist."
+            exit 1
+          fi
+
+          while IFS= read -r PR_NUMBER; do
+            if [[ -z "${PR_NUMBER}" ]]; then
+              continue
+            fi
+
+            PR_STATE="$(
+              gh api \
+                "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq '.state'
+            )"
+
+            if [[ "${PR_STATE}" != "open" ]]; then
+              echo "PR #${PR_NUMBER} is no longer open. Skipping."
+              continue
+            fi
+
+            CURRENT_BASE="$(
+              gh api \
+                "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq '.base.ref'
+            )"
+
+            if [[ "${CURRENT_BASE}" == "${RELEASE_BRANCH}" ]]; then
+              echo "PR #${PR_NUMBER} already targets ${RELEASE_BRANCH}."
+              continue
+            fi
+
+            echo "Changing PR #${PR_NUMBER}: ${CURRENT_BASE} -> ${RELEASE_BRANCH}"
+
+            gh api \
+              --method PATCH \
+              "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+              -f base="${RELEASE_BRANCH}" \
+              >/dev/null
+          done <<< "${PR_NUMBERS}"
+
+      # -----------------------------------------------------------------------
+      # Workflow summary
+      # -----------------------------------------------------------------------
+
+      - name: Write post-release summary
+        if: always()
+        shell: bash
+        env:
+          VERSION_IMPACT: ${{ steps.version_impact.outputs.impact }}
+          RELEASED_VERSION: ${{ steps.released_version.outputs.version }}
+          RELEASE_TAG: ${{ steps.released_version.outputs.tag }}
+          NEXT_VERSION: ${{ steps.next_version.outputs.version }}
+          BUMP_PR_URL: ${{ steps.bump_pr.outputs.url }}
+        run: |
+          {
+            echo "## Post-release automation"
+            echo
+            echo "- Source PR: #${{ github.event.pull_request.number }}"
+            echo "- Version Impact: \`${VERSION_IMPACT:-unknown}\`"
+            echo "- Released package version: \`${RELEASED_VERSION:-unknown}\`"
+
+            if [[ "${VERSION_IMPACT:-}" == "none" ]]; then
+              echo "- Release tag: not created"
+              echo "- Next version: not created"
+              echo "- Version-bump PR: not created"
+            else
+              echo "- Release tag: \`${RELEASE_TAG:-not-created}\`"
+              echo "- Next version: \`${NEXT_VERSION:-not-created}\`"
+              echo "- Version-bump PR: ${BUMP_PR_URL:-not-created}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

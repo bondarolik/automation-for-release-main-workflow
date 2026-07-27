@@ -1,0 +1,51 @@
+name: Validate version impact
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+      - ready_for_review
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-version-impact:
+    name: Validate version impact
+    runs-on: ubuntu-latest
+
+    # Only release -> main PRs need a release-level version decision.
+    if: >
+      github.event.pull_request.head.ref == 'release' &&
+      github.event.pull_request.base.ref == 'main'
+
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate Version Impact selection
+        id: version_impact
+        run: node .github/scripts/read-version-impact.mjs
+
+      - name: Write validation summary
+        env:
+          VERSION_IMPACT: ${{ steps.version_impact.outputs.impact }}
+        run: |
+          {
+            echo "## Version Impact validation"
+            echo
+            echo "Selected impact: \`${VERSION_IMPACT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
