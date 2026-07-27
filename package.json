@@ -1,6 +1,24 @@
 {
-  "name": "Automation For release - main workflow",
+  "name": "release-main-automation-demo",
   "version": "1.0.0",
-  "description": "Dry-run demo for PR / release / main workflow",
-  "private": true
+  "description": "Dry-run demo for automated release-to-main post-release workflows.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "test": "node --test",
+    "validate:package": "node -e \"const pkg = require('./package.json'); if (!/^\\d+\\.\\d+\\.\\d+([+-][0-9A-Za-z.-]+)?$/.test(pkg.version)) process.exit(1); console.log('Valid package version:', pkg.version)\"",
+    "version:current": "node --print \"require('./package.json').version\"",
+    "demo:patch": "npm version patch --no-git-tag-version --ignore-scripts",
+    "demo:minor": "npm version minor --no-git-tag-version --ignore-scripts",
+    "demo:major": "npm version major --no-git-tag-version --ignore-scripts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bondarolik/automation-for-release-main-workflow.git"
+  }
 }
