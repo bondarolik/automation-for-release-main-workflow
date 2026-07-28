@@ -175,6 +175,29 @@ jobs:
 
           git push origin "${RELEASE_TAG}"
 
+      - name: Create GitHub release
+        if: steps.version_impact.outputs.should_release == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.released_version.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # A prior run may have created the release before failing later in
+          # the lifecycle. Treat that as a successful, safe-to-rerun state.
+          if gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release for ${RELEASE_TAG} already exists."
+            exit 0
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Release ${RELEASE_TAG}" \
+            --generate-notes
+
+          echo "Created GitHub Release for ${RELEASE_TAG}."
+
       - name: Record no-release selection
         if: steps.version_impact.outputs.impact == 'none'
         shell: bash
