@@ -432,11 +432,10 @@ jobs:
             --base "${RELEASE_BRANCH}" \
             --state open \
             --json number,url \
-            --jq '.[0]') 2>/dev/null || true)"
+            --template '{{range .}}{{.number}} {{.url}}{{end}}')"
 
-          if [[ -n "${EXISTING_PR}" && "${EXISTING_PR}" != "null" ]]; then
-            PR_NUMBER="$(jq --raw-output '.number' <<< "${EXISTING_PR}")"
-            PR_URL="$(jq --raw-output '.url' <<< "${EXISTING_PR}")"
+          if [[ -n "${EXISTING_PR}" ]]; then
+            read -r PR_NUMBER PR_URL <<< "${EXISTING_PR}"
             echo "Reusing existing version-bump PR #${PR_NUMBER}: ${PR_URL}"
             echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
             echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
