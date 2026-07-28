@@ -25,6 +25,10 @@ jobs:
       github.event.pull_request.head.ref == 'release' &&
       github.event.pull_request.base.ref == 'main'
 
+    outputs:
+      impact: ${{ steps.version_impact.outputs.impact }}
+      should_release: ${{ steps.version_impact.outputs.should_release }}
+
     steps:
       - name: Check out pull request
         uses: actions/checkout@v6

@@ -193,7 +193,7 @@ package.json
 using
 
 ```
-npm version
+pnpm version
 ```
 
 ---
