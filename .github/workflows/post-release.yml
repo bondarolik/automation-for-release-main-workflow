@@ -450,12 +450,16 @@ jobs:
               --body "${PR_BODY}"
           )"
 
-          PR_NUMBER="$(
-            gh pr view "${PR_URL}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --json number \
-              --jq '.number'
-          )"
+          # gh pr create prints the new pull request URL on success. Avoid a
+          # second gh API call here: besides being unnecessary, it can fail
+          # after the PR has already been created and leave this lifecycle in
+          # a partially-completed state.
+          if [[ ! "${PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$ ]]; then
+            echo "::error::gh pr create returned an unexpected pull request URL: ${PR_URL}"
+            exit 1
+          fi
+
+          PR_NUMBER="${PR_URL##*/}"
 
           echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
           echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
