@@ -4,7 +4,7 @@
 
 This document explains how to configure a repository before enabling the automated post-release workflow.
 
-The automation runs after a pull request from `release` into `main` is merged. It creates the release tag, rotates the `release` branch, calculates the next semantic version, creates and merges a version-bump pull request, and restores open pull requests to the new `release` branch.
+The automation runs after a pull request from `release` into `main` is merged. It creates the release tag and GitHub Release, rotates the `release` branch, calculates the next semantic version, creates and merges a version-bump pull request, and restores open pull requests to the new `release` branch.
 
 ---
 
@@ -324,6 +324,51 @@ Never commit the token into:
 
 Use an Actions secret.
 
+## Verify a fine-grained PAT
+
+To inspect or replace a fine-grained personal access token, open:
+
+```text
+GitHub avatar
+→ Settings
+→ Developer settings
+→ Personal access tokens
+→ Fine-grained tokens
+→ <the token used for RELEASE_AUTOMATION_TOKEN>
+```
+
+Confirm all of the following:
+
+* the resource owner is the correct user or organisation
+* repository access includes this repository
+* **Contents** is `Read and write`
+* **Pull requests** is `Read and write`
+* the token has not expired
+* for an organisation repository, the token has received any required SSO or
+  organisation approval
+
+Repository ownership and a user's personal ruleset bypass do not automatically
+apply to the workflow. The workflow acts as the identity represented by
+`RELEASE_AUTOMATION_TOKEN`.
+
+To verify the secret is present, open:
+
+```text
+Repository
+→ Settings
+→ Secrets and variables
+→ Actions
+```
+
+The secret must be named exactly `RELEASE_AUTOMATION_TOKEN` and be a repository
+secret available to the workflow. Replace its value after rotating or replacing
+the token. GitHub does not display an existing secret value.
+
+If the log contains `fatal: could not read Username for 'https://github.com':
+terminal prompts disabled`, treat it as an authentication problem: check the
+secret name, token expiration, repository access, organisation approval, and
+the permissions above.
+
 ---
 
 # 9. Token Expiration and Ownership
@@ -382,10 +427,12 @@ Repository
 Recommended setting:
 
 ```text
-Read repository contents permission
+Read and write permissions
 ```
 
-The workflows declare their required permissions explicitly, and the external automation token supplies the write identity.
+The workflows declare their required permissions explicitly, and the external
+automation token supplies the normal write identity. The write setting also
+keeps the `GITHUB_TOKEN` fallback usable when the repository secret is absent.
 
 Do not rely on a repository-wide permissive default when explicit permissions can be declared in each workflow.
 
@@ -932,6 +979,7 @@ Before the first production use, confirm:
 * [ ] The token has Contents read/write
 * [ ] The token has Pull Requests read/write
 * [ ] The automation identity can create tags
+* [ ] The automation identity can create GitHub Releases
 * [ ] The automation identity can delete `release`
 * [ ] The automation identity can recreate `release`
 * [ ] The automation identity can merge into `release`
@@ -949,6 +997,17 @@ Before the first production use, confirm:
 ---
 
 # 23. Operational Notes
+
+## Updating a release PR branch
+
+The post-release workflow starts only after the `release → main` PR is merged
+and checks out that merge commit from `main`. Updating the release PR branch is
+therefore not required merely to make post-release automation use `main`.
+
+Use GitHub's **Update branch** only when it is required by branch protection or
+when the release PR should be re-tested against the latest `main`. If an update
+is needed during this flow, prefer merging `main` into `release`; avoid rebasing
+the rotating `release` branch during post-release recovery.
 
 ## Do not manually create the next version bump
 
@@ -984,6 +1043,18 @@ Before rerunning, check for:
 * PRs still targeting `main`
 
 The workflow protects several operations against duplication, but a failed run may still require cleanup.
+
+## Recovering after a version-bump PR failure
+
+Do not rerun the entire post-release workflow blindly after it has created the
+version-bump branch. A rerun can stop on that existing branch and may rotate
+`release` again. Instead:
+
+1. check whether the `deploy/chore-version-bump-vX.Y.Z` branch has an open PR
+   into `release`;
+2. create that PR manually if it is missing, then merge it;
+3. restore any feature PRs left targeting `main` back to `release`;
+4. fix and merge the workflow before the next release.
 
 ---
 

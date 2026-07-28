@@ -45,11 +45,14 @@ Exactly **one** option must be selected.
 ```md
 ## Version Impact
 
-- [ ] patch
+- [x] patch
 - [ ] minor
 - [ ] major
 - [ ] none
 ```
+
+The selection must be in the **release PR description**, not a review or
+comment. Keep the `## Version Impact` heading and option names unchanged.
 
 Meaning:
 
@@ -107,7 +110,20 @@ from the merge commit on `main`.
 
 ---
 
-## 4. Move Open PRs
+## 4. Create GitHub Release
+
+Creates a GitHub Release page for the new tag, titled for example:
+
+```
+Release v1.8.4
+```
+
+GitHub generates the release notes. On a safe rerun, an existing Release for
+the tag is reused rather than overwritten.
+
+---
+
+## 5. Move Open PRs
 
 Every open PR targeting
 
@@ -125,7 +141,7 @@ This allows the old release branch to be deleted safely.
 
 ---
 
-## 5. Delete Release Branch
+## 6. Delete Release Branch
 
 Deletes
 
@@ -137,7 +153,7 @@ from GitHub.
 
 ---
 
-## 6. Create New Release Branch
+## 7. Create New Release Branch
 
 Creates a fresh
 
@@ -149,7 +165,7 @@ branch from the latest `main`.
 
 ---
 
-## 7. Calculate Next Version
+## 8. Calculate Next Version
 
 Uses the Version Impact selected in the Release PR.
 
@@ -164,7 +180,7 @@ Example:
 
 ---
 
-## 8. Create Version Bump Branch
+## 9. Create Version Bump Branch
 
 Creates
 
@@ -180,7 +196,7 @@ deploy/chore-version-bump-v1.9.0
 
 ---
 
-## 9. Update package.json
+## 10. Update package.json
 
 Automatically updates
 
@@ -198,7 +214,7 @@ pnpm version
 
 ---
 
-## 10. Create Version Bump PR
+## 11. Create Version Bump PR
 
 Creates a PR similar to
 
@@ -214,13 +230,13 @@ release
 
 ---
 
-## 11. Merge Version Bump PR
+## 12. Merge Version Bump PR
 
 The automation merges the Version Bump PR.
 
 ---
 
-## 12. Restore Remaining PRs
+## 13. Restore Remaining PRs
 
 Every previously opened feature PR is moved back
 
@@ -289,6 +305,7 @@ The easiest way to validate the workflow is using a temporary repository or a di
 Expected result
 
 - Release tag created
+- GitHub Release page created
 - New release branch created
 - Version bump PR created
 - package.json bumped to patch version
@@ -426,7 +443,6 @@ The automation account must be allowed to:
 Possible enhancements for future iterations:
 
 - Support monorepo versioning
-- Automatic GitHub Release generation
 - Changelog generation from merged PRs
 - Slack / Teams release notifications
 - Jira release ticket updates
