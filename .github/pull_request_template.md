@@ -4,9 +4,9 @@
 
 ## Version Impact
 
-Check **exactly one** box. CI enforces a single selection.
+For a `release` → `main` pull request, select exactly one option.
 
-- [ ] **patch** — backward-compatible bug fix (`x.y.Z+1`)
-- [ ] **minor** — new backward-compatible feature (`x.Y+1.0`)
-- [ ] **major** — breaking change (`X+1.0.0`)
-- [ ] **none** — docs / CI / markdown only (no release)
+- [ ] **patch** — backward-compatible bug fix
+- [ ] **minor** — backward-compatible feature
+- [ ] **major** — breaking change
+- [ ] **none** — no release tag or version bump

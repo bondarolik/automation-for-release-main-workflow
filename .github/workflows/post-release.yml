@@ -41,13 +41,16 @@ jobs:
       - name: Check out merged main branch
         uses: actions/checkout@v6
         with:
-          ref: main
+          # Tag the precise commit that GitHub reports as merged, rather than a
+          # newer main commit that may arrive while this job is queued.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_AUTOMATION_TOKEN }}
           persist-credentials: true
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
+        # With no version input, this action reads packageManager from package.json.
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -142,9 +145,7 @@ jobs:
 
           git fetch origin "${MAIN_BRANCH}" --tags --force
 
-          MAIN_SHA="$(
-            git rev-parse "origin/${MAIN_BRANCH}"
-          )"
+          MAIN_SHA="${{ github.event.pull_request.merge_commit_sha }}"
 
           if git rev-parse \
             --verify \
@@ -190,8 +191,14 @@ jobs:
       - name: Retarget open PRs from release to main
         id: retarget_to_main
         shell: bash
+        env:
+          RETARGETED_PRS_FILE: ${{ runner.temp }}/post-release-retargeted-prs-${{ github.run_id }}.txt
         run: |
           set -euo pipefail
+
+          # Persist each successful update immediately. The recovery step can
+          # restore this file even if a later PATCH in this loop fails.
+          : > "${RETARGETED_PRS_FILE}"
 
           mapfile -t PR_NUMBERS < <(
             gh api \
@@ -206,8 +213,6 @@ jobs:
 
           echo "Found ${#PR_NUMBERS[@]} open PR(s) targeting ${RELEASE_BRANCH}."
 
-          RETARGETED_PR_NUMBERS=""
-
           for PR_NUMBER in "${PR_NUMBERS[@]}"; do
             echo "Changing PR #${PR_NUMBER}: ${RELEASE_BRANCH} -> ${MAIN_BRANCH}"
 
@@ -217,12 +222,12 @@ jobs:
               -f base="${MAIN_BRANCH}" \
               >/dev/null
 
-            RETARGETED_PR_NUMBERS+="${PR_NUMBER}"$'\n'
+            echo "${PR_NUMBER}" >> "${RETARGETED_PRS_FILE}"
           done
 
           {
             echo "pr_numbers<<EOF"
-            printf '%s' "${RETARGETED_PR_NUMBERS}"
+            cat "${RETARGETED_PRS_FILE}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -254,13 +259,9 @@ jobs:
 
           git fetch origin "${MAIN_BRANCH}"
 
-          git checkout \
-            --force \
-            -B "${RELEASE_BRANCH}" \
-            "origin/${MAIN_BRANCH}"
+          git checkout --force -B "${RELEASE_BRANCH}" "origin/${MAIN_BRANCH}"
 
           git push \
-            --force-with-lease \
             --set-upstream \
             origin \
             "${RELEASE_BRANCH}"
@@ -298,6 +299,10 @@ jobs:
             --no-git-tag-version \
             --ignore-scripts
 
+          # pnpm version changes package.json. Refresh the lockfile too, if
+          # pnpm considers its contents affected, without installing packages.
+          pnpm install --lockfile-only --ignore-scripts
+
           NEXT_VERSION="$(
             node --print "require('./package.json').version"
           )"
@@ -333,8 +338,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- package.json pnpm-lock.yaml; then
-            echo "::error::No version-related changes were produced."
+          if git diff --quiet -- package.json; then
+            echo "::error::pnpm did not update package.json."
             exit 1
           fi
 
@@ -357,7 +362,7 @@ jobs:
             origin \
             "${BUMP_BRANCH}" >/dev/null 2>&1; then
 
-            echo "::error::Remote branch ${BUMP_BRANCH} already exists."
+            echo "::error::Remote branch ${BUMP_BRANCH} already exists. Refusing to overwrite it; inspect its commit or its PR, then rerun after recovery."
             exit 1
           fi
 
@@ -394,6 +399,23 @@ jobs:
           SOURCE_RELEASE_PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+
+          EXISTING_PR="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head "${BUMP_BRANCH}" \
+            --base "${RELEASE_BRANCH}" \
+            --state open \
+            --json number,url \
+            --jq '.[0]') 2>/dev/null || true)"
+
+          if [[ -n "${EXISTING_PR}" && "${EXISTING_PR}" != "null" ]]; then
+            PR_NUMBER="$(jq --raw-output '.number' <<< "${EXISTING_PR}")"
+            PR_URL="$(jq --raw-output '.url' <<< "${EXISTING_PR}")"
+            echo "Reusing existing version-bump PR #${PR_NUMBER}: ${PR_URL}"
+            echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
+            echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           PR_BODY="$(
             cat <<EOF
@@ -448,7 +470,6 @@ jobs:
           gh pr merge "${VERSION_BUMP_PR}" \
             --repo "${GITHUB_REPOSITORY}" \
             --merge \
-            --admin \
             --delete-branch
 
       # ---------------------------------------------------------------------
@@ -456,12 +477,17 @@ jobs:
       # ---------------------------------------------------------------------
 
       - name: Retarget original PRs back to release
-        if: always() && steps.retarget_to_main.outcome == 'success'
+        if: always()
         shell: bash
         env:
-          PR_NUMBERS: ${{ steps.retarget_to_main.outputs.pr_numbers }}
+          RETARGETED_PRS_FILE: ${{ runner.temp }}/post-release-retargeted-prs-${{ github.run_id }}.txt
         run: |
           set -euo pipefail
+
+          if [[ ! -s "${RETARGETED_PRS_FILE}" ]]; then
+            echo "No PR bases were changed; nothing to restore."
+            exit 0
+          fi
 
           if ! git ls-remote \
             --exit-code \
@@ -507,7 +533,7 @@ jobs:
               "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
               -f base="${RELEASE_BRANCH}" \
               >/dev/null
-          done <<< "${PR_NUMBERS}"
+          done < "${RETARGETED_PRS_FILE}"
 
       # ---------------------------------------------------------------------
       # Summary
