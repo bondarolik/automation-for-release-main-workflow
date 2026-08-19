@@ -1,6 +1,6 @@
 {
   "name": "release-main-automation-demo",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Dry-run demo for automated release-to-main post-release workflows.",
   "private": true,
   "license": "UNLICENSED",
