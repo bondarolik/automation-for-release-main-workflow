@@ -3,3 +3,7 @@ export type Better = {
   businessNumber: string | null;
   address: string;
 };
+
+export type SmallOne = {
+  id: bigint;
+}
